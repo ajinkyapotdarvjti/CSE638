@@ -1,0 +1,280 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <queue>
+#include <cstdlib>
+//#include <mutex>
+#include <cilk.h>
+#include <pthread_mutex.h>
+#include <reducer_opadd.h>
+
+#define p 72
+#define MAX_STEAL_ATTEMPTS 24
+#define MIN_STEAL_SIZE 2
+
+using namespace std;
+
+class Node {
+	public:
+		int data;
+		Node *next;
+		Node *prev;
+};
+
+class Queue {
+	Node *start;
+	Node *end;
+	int size;
+
+	public:
+
+	Queue() {
+		start = NULL;
+		end = NULL;
+		size = 0;
+	}
+
+	~Queue() {
+		if (start == NULL) {
+			return;	
+		}
+
+		while(!empty()) {
+			remove();
+		}
+	}
+
+	void add(int v) {
+		//cout << "Adding..." << endl;
+		Node *r = start;
+
+		Node *q = new Node;
+		q->data = v;
+		q->next = NULL;
+		q->prev = end;
+                if(end != NULL)end->next = q;
+		end = q;
+		size++;
+		if (start == NULL) {
+			start = q;
+			start->prev = NULL;
+		}
+		//cout << "add....start = " << start << ", end = " << end << ", size = " << size << endl;
+	}
+
+	int remove() {
+		//cout << "Remove..start " << start << endl;
+
+		int result = -1;
+
+		if (start == NULL) {
+			//cout << "Underflow....size = " << size << endl;
+		} else {
+			Node *q = start;
+			start = start->next;
+			if(start != NULL) {
+				start->prev = NULL;
+			}
+
+			int v = q->data;
+			q->next = NULL;
+			q->prev = NULL;
+			delete q;
+
+			result = v;
+			size--;
+
+			if(size == 0) {
+				end = NULL;
+			}
+			//cout << "remove...start = " << start << ", end = " << end << ", size = " << size << endl;
+
+		}
+		return result;
+	}
+
+	Node* get_start() {
+		return start;
+	}
+
+	int empty() {
+		//return start==NULL;
+		return size==0;
+	}
+
+	void make_empty() {
+		while(!empty()) {
+			remove();
+		}
+
+	}
+
+	int get_size() {
+		return size;
+	}
+};
+
+class Vertex {
+	public:
+		int id;
+		vector<int> *neighbors;
+
+		Vertex(int id) {
+			this->id = id;
+			neighbors = new vector<int>();
+		}
+
+		~Vertex() {
+			delete neighbors;
+		}
+};
+
+class Graph {
+	Vertex **vertices;
+	int n;
+	int m;
+	int INFINITY;
+
+	Queue q;
+
+	public:
+
+	Graph(int n) {
+		vertices = new Vertex*[n];
+		for(int i=0; i<n; i++) {
+			vertices[i] = new Vertex(i);
+		}
+
+		this->n = n;
+		this->m = 0;
+		INFINITY = this->n;
+	}
+
+	~Graph() {
+
+		for(int i=0; i<n; i++) {
+			delete vertices[i];
+		}
+
+		delete vertices;
+
+		cleanup_queue();
+	}
+
+	void add_edge(int u, int v) {
+		vertices[u]->neighbors->push_back(v);
+		this->m++;
+	}
+
+	void cleanup_queue() {
+		q.make_empty();
+	}
+
+	void bfs(int s, int *d) {
+                for (int i=0; i<this->n; i++) {
+                        d[i] = INFINITY;
+                }
+
+                d[s] = 0;
+                cleanup_queue();
+
+                q.add(s);
+                int u;
+                while(!q.empty()) {
+                        u = q.remove();
+
+                        for(int i=0; i<vertices[u]->neighbors->size(); i++) {
+                                int v = vertices[u]->neighbors->at(i);
+
+                                if(d[v] == INFINITY) {
+                                        d[v] = d[u] + 1;
+                                        q.add(v);
+                                }
+                        }
+                }
+	}
+
+	int get_diameter(int *d) {
+		int max = 0;
+
+		for(int i=0; i<this->n; i++) {
+
+			if (d[i] > max && d[i] != INFINITY) {
+				max = d[i];
+			}
+		}
+
+		return max;
+	}
+
+	unsigned long long computeChecksum(int* d) {
+		cilk::reducer_opadd< unsigned long long > chksum;
+		cilk_for (int i = 0; i < n; i++) {
+			chksum += d[i];
+		}
+
+		return chksum.get_value();
+	}
+
+	void display() {
+		for(int i=0; i<n; i++) {
+			Vertex* u = vertices[i];
+			cout << "Vertex: " << u->id << " Neighbors: ";
+			for(int j=0; j<u->neighbors->size(); j++) {
+				cout << u->neighbors->at(j) << " ";
+			}
+
+			cout << endl;
+		}
+	}
+};
+
+int cilk_main(int argc, char* argv[]) {
+
+	cout << "Starting..." << endl;
+	cout << "Argument " << argv[1] << endl;
+	//fstream fin;
+	//fin.open("samples/sample-01-in.txt");
+	//fin.open("input");
+	int n, m, r;
+
+	//fin >> n >> m >> r;
+	cin >> n >> m >> r;
+	Graph *g = new Graph(n);
+	int u, v;
+	for (int i=0; i<m; i++) {
+		//fin >> u >> v;
+		cin >> u >> v;
+		g->add_edge(u-1, v-1);
+	}
+	//g->display();
+	int s;
+	int *d;
+	ofstream fout;
+	fout.open(argv[1]);
+
+	cout << "r = " << r << endl;
+	for(int i=0; i<r; i++) {
+		//fin >> s;
+		cin >> s;
+		s--;
+		d = new int[n];
+
+		cout << "BFS for source: " << s << endl;
+		g->bfs(s, d);
+
+		fout << g->get_diameter(d) << " " << g->computeChecksum(d) << endl;
+		//cout << g->get_diameter(d) << " " << g->computeChecksum(d) << endl;
+
+		cout << "----------------------------" << endl;
+
+		delete d;
+	}
+
+	delete g;
+	/*
+	//fin.close();
+	 */
+
+	return 0;
+}

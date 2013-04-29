@@ -1,0 +1,540 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <set>
+#include <list>
+#include <cstdlib>
+#include <cmath>
+#include <ctime>
+
+#include <cilk.h>
+#include <pthread_mutex.h>
+#include <sys/time.h>
+
+#define HEAD true
+#define TAIL false
+
+#define EMPTY -1
+
+using namespace std;
+
+class Vertex {
+	public:
+		long id;
+
+		Vertex(long id) {
+			this->id = id;
+		}
+
+		~Vertex() {
+		}
+
+
+};       
+
+class Edge {
+	public:
+		long u;
+		long v;
+		long cost;
+
+		Edge(long u, long v, long cost) {
+			this->u = u;
+			this->v = v;
+			this->cost = cost;
+		}
+
+		~Edge() {
+		}
+
+		bool operator==(Edge *e) {
+			u = e->u;
+			v = e->v;
+		}
+};
+
+void display_graph(vector<Vertex*> *v, vector<Edge> *e);
+void random_hook_cc(vector<Vertex*> *v, long *l, long *N, long n, long real_n);
+
+void get_graph(vector<Vertex*> *v, vector<Edge*> *e) {
+
+	long n, m;
+	cin >> n >> m;
+
+	for (long i=0; i<n; i++) {
+		v->push_back(new Vertex(i));
+	}
+
+	long a, b;
+	for (long i=0; i<m; i++) {
+		cin >> a >> b;
+		e->push_back(new Edge(a-1, b-1, 0));
+	}
+
+}
+
+void dump_result(long *l, long n, char *file_name) {
+
+	ofstream fout(file_name);
+
+	long *r = new long[n];
+
+	for(long i=0; i<n; i++) {
+		r[i] = 0;
+	}
+
+	for(long i=0; i<n; i++) {
+		r[l[i]]++;
+	}
+
+	list<long> *result = new list<long>();
+
+	for(long i=0; i<n; i++) {
+		if(r[i]) {
+			result->push_back(r[i]);
+		}
+	}
+
+	fout << result->size() << endl;
+	result->sort();
+	result->reverse();
+	for(list<long>::iterator it=result->begin(); it!=result->end(); ++it) {
+		fout << (*it) << endl;
+	}
+
+	fout.close();
+
+	delete []r;
+	delete result;
+}
+
+void parallel_prefix_sum(vector<long> *x, vector<long> *s) {
+	long n = x->size();
+	vector<long> *y = new vector<long>();
+	if (n == 1) {
+		s->insert(s->begin(), x->at(0));
+	} else {
+		for (long i = 0; i < n/2; ++i) {
+			y->insert(y->begin()+i, x->at(2*i) + x->at(2*i+1));
+		}
+		vector<long> *z = new vector<long>();
+		parallel_prefix_sum(y, z);
+		for (long i = 0; i < n; ++i) {
+			if (i == 0)
+				s->insert(s->begin(), x->at(0));
+			else if (i % 2 != 0)
+				s->insert(s->begin()+i, z->at((i-1)/2));
+			else
+				s->insert(s->begin()+i, z->at((i-2)/2) + x->at(i));
+		}
+		delete z;
+	}
+	delete y;
+	return;
+}
+
+void update_ancestors(long *l, long old, long real_n) {
+	cilk_for(long j=0; j<real_n; j++) {
+		if(l[j] == old) {
+			l[j] = l[old];
+		}
+	}
+}
+
+void parallel_randomized_cc(vector<Vertex*> *v, vector<Edge*> *e, long *l, long real_n) {
+
+        long n = v->size();
+        long m = e->size();
+
+        if(m == 0) {
+                return;
+        }
+
+        long *N = new long[real_n];
+
+        cilk_for(long i=0; i<real_n; i++) {
+                N[i] = EMPTY;
+        }
+
+        cilk_for(long i=0; i<m; i++) {
+                N[e->at(i)->u] = e->at(i)->v;
+                N[e->at(i)->v] = e->at(i)->u;
+        }
+        random_hook_cc(v, l, N, n, real_n);
+	delete []N;
+
+        vector<Vertex*> *v1 = new vector<Vertex*>();
+        for(long i=0; i<n; i++) {
+                if(v->at(i)->id == l[v->at(i)->id]) {
+                        v1->push_back(v->at(i));
+                }
+        }
+
+        vector<Edge*> *e1 = new vector<Edge*>();
+
+                for(long i=0; i<m; i++) {
+                if(l[e->at(i)->u] != l[e->at(i)->v]) {
+                        Edge *b = new Edge(l[e->at(i)->u], l[e->at(i)->v], 0);
+                        e1->push_back(b);
+                }
+        }
+
+        cilk_for(long i=0; i<m; i++) {
+              delete e->at(i);
+        }
+        delete e;
+       
+        parallel_randomized_cc(v1, e1, l, real_n);
+
+        cilk_for(long i=0; i<n; i++) {
+                l[v->at(i)->id] = l[l[v->at(i)->id]];
+        }
+        delete v;
+}
+
+void random_hook_cc(vector<Vertex*> *v, long *l, long *N, long n, long real_n) {
+	bool *C = new bool[real_n];
+	bool *H = new bool[real_n];
+
+	cilk_for(long i=0; i<n; i++) {
+		if(rand() %2) {
+			C[v->at(i)->id] = HEAD;
+		} else {
+			C[v->at(i)->id] = TAIL;
+		}
+	}
+
+	cilk_for(long i=0; i<n; i++) {
+		long v1 = N[v->at(i)->id];
+
+		if(C[v->at(i)->id]==TAIL && C[v1]==HEAD) {
+			l[v->at(i)->id] = v1;
+		}
+	}
+
+	delete []C;
+	delete []H;
+
+}
+
+void random_hook(Vertex **v, long *l, long *N, long n, long real_n) {
+	bool *C = new bool[real_n];
+	bool *H = new bool[real_n];
+
+	cilk_for(long i=0; i<n; i++) {
+		int r = rand() % 2;
+		if(r) {
+			C[v[i]->id] = HEAD;
+		} else {
+			C[v[i]->id] = TAIL;
+		}
+
+		H[v[i]->id] = false;
+	}
+
+	cilk_for(long i=0; i<n; i++) {
+		long v1 = N[v[i]->id];
+
+		if(C[v[i]->id]==TAIL && C[v1]==HEAD) {
+			l[v[i]->id] = v1;
+			H[v[i]->id] = true;
+			H[v1] = true;
+		}
+	}
+
+	cilk_for(long i=0; i<n; i++) {
+		if(H[v[i]->id]) {
+			C[v[i]->id] = HEAD;
+		} else if(C[v[i]->id] == TAIL) {
+			C[v[i]->id] = HEAD;
+		} else {
+			C[v[i]->id] = TAIL;
+		}
+	}
+
+	cilk_for(long i=0; i<n; i++) {
+		long v1 = N[v[i]->id];
+		if(C[v[i]->id]==TAIL && C[v1]==HEAD) {
+			l[v[i]->id] = l[v1];
+		}
+	}
+	delete []C;
+	delete []H;
+
+}
+
+void parallel_randomized_cc2(Vertex **v, Edge **e, long *l, long n, long m, long real_n) {
+
+	if(m == 0) {
+		return;
+	}
+
+	long *N = new long[real_n];
+	
+	cilk_for(long i=0; i<real_n; i++) {
+		N[i] = EMPTY;
+	}
+
+	cilk_for(long i=0; i<m; i++) {
+		N[e[i]->u] = e[i]->v;
+		N[e[i]->v] = e[i]->u;
+	}
+
+	random_hook(v, l, N, n, real_n);
+
+	Vertex **v1 = new Vertex*[n];
+	long new_n = 0;
+	for(long i=0; i<n; i++) {
+		if(v[i]->id == l[v[i]->id]) {
+			v1[new_n++] = v[i];
+		}
+	}
+
+	Edge **e1 = new Edge*[m];
+	long new_m = 0;
+	for(long i=0; i<m; i++) {
+		if(l[e[i]->u] != l[e[i]->v]) {
+			Edge *b = new Edge(l[e[i]->u], l[e[i]->v], 0);
+			e1[new_m++] = b;
+		}
+	}
+
+	cilk_for(long i=0; i<m; i++) {
+		delete e[i];
+	}
+
+	delete[] e;
+	delete []N;
+
+	parallel_randomized_cc2(v1, e1, l, new_n, new_m, real_n);
+
+	cilk_for(long i=0; i<n; i++) {
+		l[v[i]->id] = l[l[v[i]->id]];
+	}
+	delete v;
+}
+
+int prev = -1;
+void parallel_randomized_cc3(Vertex **v, Edge **e, long n, long m, long *l, long real_n, bool *PhD, long *N, bool *U, long d) {
+	
+	static int prev_n = -1;
+	if(n == prev)
+	{
+		return;
+	}
+
+	prev = n;
+	double ALPHA  = sqrt((double)15/(double)16);
+
+	long D_MAX;
+	double dmax_d = (double)(0.25 * (double)(log((double)real_n)/log(ALPHA)) * (-1));
+	D_MAX = (long)dmax_d;
+	if((double)D_MAX < dmax_d) {
+		D_MAX++;
+	}
+
+	cilk_for(long i=0; i<real_n; i++) {
+		N[i] = EMPTY;
+	}
+
+	int all_phd_false = 0;
+	if(d <= D_MAX && !all_phd_false) {
+
+		double md_double = ((double)m * pow((double)ALPHA, (double)d));
+		long md = (long)md_double;
+		if((double)md < md_double) {
+			md++;
+		}
+
+		Edge **e_cap = new Edge*[m];
+		long count = 0;
+		int i,j;
+		cilk_for(long i = 0; i < md; i++) {
+			e_cap[i] = e[i];
+		}
+
+		cilk_for(long i = md; i < m; i++) {
+			long j = rand() % (i+1);
+			if( j <= md) {
+				e_cap[j] = e[i];
+			}
+		}
+
+		cilk_for(long i=0; i<n; i++) {
+			U[v[i]->id] = false;
+		}
+
+		cilk_for(long i=0; i<md; i++) {
+			Edge *edge = e_cap[i];
+			long u_dash = l[edge->u];
+			long v_dash = l[edge->v];
+			if (edge->u == u_dash && edge->v == v_dash && u_dash != v_dash && PhD[u_dash] == PhD[v_dash] && PhD[u_dash]) {
+				N[u_dash] = v_dash;
+				N[v_dash] = u_dash;
+
+				U[u_dash] = true;
+				U[v_dash] = true;
+			}
+		}
+
+		delete []e_cap;
+
+		cilk_for(long i=0; i<n; i++) {
+			if(U[v[i]->id] == false) {
+				PhD[v[i]->id] = false;
+			}
+		}
+
+		Vertex **v_cap = new Vertex*[n];
+		long new_n = 0;
+		for(long i=0; i<n; i++) {
+			if(U[v[i]->id]) {
+				v_cap[new_n++] = v[i];
+			}
+		}
+		if(new_n == 0)
+		{
+			all_phd_false = 1;
+		}
+
+		random_hook(v_cap, l, N, new_n, real_n);
+
+		delete []v_cap;
+
+		Vertex **v_dash = new Vertex*[n];
+		new_n = 0;
+		for(long i=0; i<n; i++) {
+			if(v[i]->id == l[v[i]->id]) {
+				v_dash[new_n++] = v[i];
+			}
+		}
+
+		parallel_randomized_cc3(v_dash, e, new_n, m, l, real_n, PhD, N, U, d+1);
+
+		if((d+1) <= D_MAX) delete []v_dash;
+
+		cilk_for(long i=0; i<n; i++) {
+			l[v[i]->id] = l[l[v[i]->id]];
+		}
+	} 
+	if(d==0)
+	{
+		Edge **e_dash = new Edge*[m];
+		long new_m = 0;
+
+		Vertex **v_dash = new Vertex*[n];  
+		long new_n = 0;        
+		for(long i=0; i<n; i++) {              
+			if(v[i]->id == l[v[i]->id]) {                        
+				v_dash[new_n++] = v[i];                
+			}        
+		}
+
+		for(long i=0; i<m; i++) {
+			if(l[e[i]->u] != l[e[i]->v]) {
+				Edge *b = new Edge(l[e[i]->u], l[e[i]->v], 0);
+				e_dash[new_m++] = b;
+			}
+		}
+		parallel_randomized_cc2(v_dash, e_dash, l, new_n, new_m, real_n);
+		cilk_for(long i=0; i<n; i++) {
+			l[v[i]->id] = l[l[v[i]->id]];
+		}
+	}
+}
+
+void display_graph(vector<Vertex*> *v, vector<Edge*> *e) {
+
+	long a = v->size();
+	for(long i=0; i<a; i++) {
+		cout << v->at(i)->id << " ";
+	}
+	cout << endl;
+
+	long b = e->size();
+	for(long i=0; i<b; i++) {
+		cout << e->at(i)->u << "---" << e->at(i)->v << ", cost = " << e->at(i)->cost << endl;
+	}
+}
+
+int cilk_main(int argc, char* argv[]) {
+
+	vector<Vertex*> *v = new vector<Vertex*>();;
+	vector<Edge*> *e = new vector<Edge*>();
+
+	get_graph(v, e);
+
+	long n = v->size();
+	long m = e->size();
+
+	Vertex **v_array = new Vertex*[n];
+	Edge **e_array = new Edge*[m];
+
+	long k = 0;
+
+	cilk_for(long i=0; i<n; i++) {
+		v_array[i] = v->at(i);
+	}
+
+	cilk_for(long i=0; i<m; i++) {
+		e_array[i] = e->at(i);
+	}
+
+	long *l = new long[n];
+	for(long i=0; i<n; i++) {
+		l[i] = i;
+	}
+
+	bool *PhD = new bool[n];
+	long *N = new long[n];
+	bool *U = new bool[n];
+	for(long i=0; i<n; i++) {
+		PhD[i] = true;
+		N[i] = EMPTY;
+		U[i] = false;
+	}
+
+	struct timeval start, end;
+	long mtime, seconds, useconds;
+	if (!strcmp(argv[1], "cc")) {  
+              // cc
+               	gettimeofday(&start, NULL); 
+               	parallel_randomized_cc(v, e, l, n);
+                gettimeofday(&end, NULL);
+                seconds  = end.tv_sec  - start.tv_sec; 
+             	useconds = end.tv_usec - start.tv_usec;
+		mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+		cout << "parallel_randomized_cc done in " << mtime << " ms" <<endl;//;difftime(end, start) << endl;//(after - before) << endl;
+		dump_result(l, n, argv[2]);
+
+	} else if(!strcmp(argv[1], "cc2")) {
+		// cc2
+		gettimeofday(&start, NULL);
+		parallel_randomized_cc2(v_array, e_array, l, n, m, n);
+		gettimeofday(&end, NULL);
+		seconds  = end.tv_sec  - start.tv_sec;
+		useconds = end.tv_usec - start.tv_usec;
+
+		mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+
+		cout << "parallel_randomized_cc2 done in " << mtime << " ms"  <<endl;
+		dump_result(l, n, argv[2]);
+	} else if (!strcmp(argv[1], "cc3")) {
+		// cc3
+
+		gettimeofday(&start, NULL);
+		parallel_randomized_cc3(v_array, e_array, n, m, l, n, PhD, N, U, 0);
+		gettimeofday(&end, NULL);
+		seconds  = end.tv_sec  - start.tv_sec;
+		useconds = end.tv_usec - start.tv_usec;
+		mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+
+		cout << "parallel_randomized_cc3 done in " << mtime << " ms"<< endl;
+		dump_result(l, n, argv[2]);
+	}
+
+	delete []l;
+
+	return 0;
+}
+

@@ -1,0 +1,10 @@
+The file ParallelCC2.cilk contains the source code for all the three algorithms - parallel_randomized_cc(), parallel_randomized_cc2(), parallel_randomized_cc3().
+
+For submitting the jobs, execute the following command,
+
+qsub jobs/final-job.sh <algo> <input name excluding -in>
+
+Example:
+qsub jobs/final-job.sh cc com-amazon
+qsub jobs/final-job.sh cc2 com-amazon
+qsub jobs/final-job.sh cc3 com-amazon

@@ -1,0 +1,439 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <queue>
+#include <cstdlib>
+//#include <mutex>
+#include <cilk.h>
+#include <pthread_mutex.h>
+#include <reducer_opadd.h>
+
+#define p 8
+#define MAX_STEAL_ATTEMPTS 72
+#define MIN_STEAL_SIZE 2
+
+using namespace std;
+
+class Node {
+	public:
+		int data;
+		Node *next;
+		Node *prev;
+};
+
+class Queue {
+	Node *start;
+	Node *end;
+	int size;
+
+	public:
+
+	Queue() {
+		start = NULL;
+		end = NULL;
+		size = 0;
+	}
+
+	~Queue() {
+		if (start == NULL) {
+			return;	
+		}
+
+		while(!empty()) {
+			remove();
+		}
+	}
+
+	void add(int v) {
+		//cout << "Adding..." << endl;
+		Node *r = start;
+
+		Node *q = new Node;
+		q->data = v;
+		q->next = NULL;
+		q->prev = end;
+                if(end != NULL)end->next = q;
+		end = q;
+		size++;
+		if (start == NULL) {
+			start = q;
+			start->prev = NULL;
+		}
+		//cout << "add....start = " << start << ", end = " << end << ", size = " << size << endl;
+	}
+
+	int remove() {
+		//cout << "Remove..start " << start << endl;
+
+		int result = -1;
+
+		if (start == NULL) {
+			//cout << "Underflow....size = " << size << endl;
+		} else {
+			Node *q = start;
+			start = start->next;
+			if(start != NULL) {
+				start->prev = NULL;
+			}
+
+			int v = q->data;
+			q->next = NULL;
+			q->prev = NULL;
+			delete q;
+
+			result = v;
+			size--;
+
+			if(size == 0) {
+				end = NULL;
+			}
+			//cout << "remove...start = " << start << ", end = " << end << ", size = " << size << endl;
+
+		}
+		return result;
+	}
+
+	Node* get_start() {
+		return start;
+	}
+
+	int empty() {
+		//return start==NULL;
+		return size==0;
+	}
+
+	void make_empty() {
+		while(!empty()) {
+			remove();
+		}
+
+	}
+
+	int get_size() {
+		return size;
+	}
+
+	void assign_second_half(Queue* i) {
+
+		//cout << "Reached..1..r = " << ", i = " << ", sizes before = " << get_size() << endl;
+		//cout << "Reached..2..r = " << ", i = " << ", sizes before = " << get_size() << endl;
+
+		Node *r = end;
+		int a = get_size();
+		for(int j=1; j<(a/2); j++) {
+			r=r->prev;
+		}
+
+		Node *b = r->prev;
+		b->next = NULL;
+
+		Node *c = end;
+		end = b;
+		size = size-(a/2);
+
+		Node *q = i->get_start();
+
+		if(q == NULL) {
+			i->start = r;
+			r->prev = NULL;
+			i->end = c;
+			i->size = i->size + (a/2);
+		} else {
+			//cout << "Alert...Alert...Alert" << endl;
+			i->end->next = r;
+			r->prev = i->end;
+			i->end = c;
+			i->size = i->size + (a/2);
+		}
+	}
+};
+
+class Vertex {
+	public:
+		int id;
+		vector<int> *neighbors;
+
+		Vertex(int id) {
+			this->id = id;
+			neighbors = new vector<int>();
+		}
+
+		~Vertex() {
+			delete neighbors;
+		}
+};
+
+class Graph {
+	Vertex **vertices;
+	int n;
+	int m;
+	int INFINITY;
+
+	Queue* q_out;
+
+	cilk::mutex lock[p];
+
+	public:
+
+	Queue* q_in;
+	Graph(int n) {
+		vertices = new Vertex*[n];
+		for(int i=0; i<n; i++) {
+			vertices[i] = new Vertex(i);
+		}
+
+		q_in = new Queue[p];
+		q_out = new Queue[p];
+
+		this->n = n;
+		this->m = 0;
+		INFINITY = this->n;
+	}
+
+	~Graph() {
+
+		for(int i=0; i<n; i++) {
+			delete vertices[i];
+		}
+
+		delete vertices;
+
+		cleanup_queues(q_in);
+
+		cleanup_queues(q_out);
+	}
+
+	void add_edge(int u, int v) {
+		vertices[u]->neighbors->push_back(v);
+		this->m++;
+	}
+
+	int input_queues_empty(Queue* q) {
+
+		int result = 1;
+
+		for(int i=0; i<p; i++) {
+			result = result && q[i].empty();
+		}
+
+		return result;
+	}
+
+	void cleanup_queues(Queue* q) {
+
+		if (q == NULL) {
+			return;
+		}
+
+		//cout << "Reached here..." << endl;
+
+		for(int i=0; i<p; i++) {
+			//cout << "Reached here...in iteration..." << endl;
+			q[i].make_empty();
+		}
+
+		//cout << "Reached here........" << endl;
+		delete []q;
+		//cout << "Reached here....end...." << endl;
+	}
+
+	Queue* create_queues() {
+		Queue *q = new Queue[p];
+		return q;
+	}
+
+	void assign_second_half(int i, int r) {
+
+		// stealing from rth queue to ith queue
+
+		q_in[r].assign_second_half(&q_in[i]);
+	}
+
+	void bfs(int s, int *d) {
+
+		cilk_for (int i=0; i<this->n; i++) {
+			d[i] = INFINITY;
+		}
+
+		d[s] = 0;
+
+		for(int i=0; i<p; i++) {
+			q_in[i].make_empty();
+			q_out[i].make_empty();
+		}
+
+		//cout << "Reached here, q_in = " << q_in << endl;
+
+		q_in[0].add(s);
+		int u;
+		while(!input_queues_empty(q_in)) {
+
+			cout << "Reached here..new one..." << endl;
+			cilk_for(int i=0; i<p; i++) {
+				//      s[i] = q_in[i];
+			}
+
+			for(int i=0; i<p-1; i++) {
+				cilk_spawn parallel_bfs_thread(i, d);
+			}
+			parallel_bfs_thread(p-1, d);
+
+			cilk_sync;
+
+			//cout << "Reached at sync....1" << endl;
+			cleanup_queues(q_in);
+			q_in = q_out;
+			q_out = create_queues();
+		}
+	}
+
+	void parallel_bfs_thread(int i, int* d) {
+
+
+		//cout << "Starting thread.... " << i << endl;
+
+		while(true) {
+			//cout << "Reached here outer loop " << i << endl;
+			while(!q_in[i].empty()) {
+
+				lock[i].lock();
+				int u = q_in[i].remove();
+				lock[i].unlock();
+
+				//cout << "Reached here..got the q top....u = " << u << ", i = " << i << endl;
+				int a = vertices[u]->neighbors->size();
+				for(int j=0; j<a; j++) {
+
+					//cout << "Reached here in for of relaxing...." << i << endl;
+					int v = vertices[u]->neighbors->at(j);
+
+					if(d[v] == INFINITY) {
+						//cout << "Reached here..v = infinity, v = " << v << ", i = " << i << endl;
+						d[v] = d[u] + 1;
+						q_out[i].add(v);
+					}
+				}
+			}
+
+			int t = 0;
+			lock[i].lock();
+			//cout << "Reached here..locked...." << i << endl;
+			while(q_in[i].empty() && t < MAX_STEAL_ATTEMPTS) {
+				int r = rand() % p;
+				//cout << "Reached here, r = ....." << r << endl;
+
+				if (r!=i && lock[r].try_lock()) {
+					if(q_in[r].get_size() > MIN_STEAL_SIZE) {
+						//cout << "Reached here in assigning..r = " << &q_in[r] << ", i = " << &q_in[i] << endl;
+						//cout <<"sizes before = "<< q_in[r].get_size() << ", " << q_in[i].get_size() << ", is empty " << q_in[i].empty() << endl;
+						assign_second_half(i, r);  // assign second half of r to i i.e. i=r
+						//cout <<"sizes after = "<< q_in[r].get_size() << ", " << q_in[i].get_size() << endl;
+					}
+					lock[r].unlock();
+				}
+
+				t++;
+			}
+			lock[i].unlock();
+
+			if(q_in[i].empty()) {
+				break;
+			}
+		}
+	}
+
+	int get_diameter(int *d) {
+		int max = 0;
+
+		for(int i=0; i<this->n; i++) {
+
+			if (d[i] > max && d[i] != INFINITY) {
+				max = d[i];
+			}
+		}
+
+		return max;
+	}
+
+	unsigned long long computeChecksum(int* d) {
+		cilk::reducer_opadd< unsigned long long > chksum;
+		cilk_for (int i = 0; i < n; i++) {
+			chksum += d[i];
+		}
+
+		return chksum.get_value();
+	}
+
+	long checksum(int *d) {
+		//cout << "Entered checksum" << endl;
+		long sum = 0;
+
+		for(int i=0; i<this->n; i++) {
+			sum += d[i];
+		}
+		//cout << "Exiting checksum, returning " << sum << endl;
+		return sum;
+	}
+
+	void display() {
+		for(int i=0; i<n; i++) {
+			Vertex* u = vertices[i];
+			cout << "Vertex: " << u->id << " Neighbors: ";
+			for(int j=0; j<u->neighbors->size(); j++) {
+				cout << u->neighbors->at(j) << " ";
+			}
+
+			cout << endl;
+		}
+	}
+};
+
+int cilk_main(int argc, char* argv[]) {
+
+	cout << "Starting..." << endl;
+	cout << "Argument " << argv[1] << endl;
+	//fstream fin;
+	//fin.open("samples/sample-01-in.txt");
+	//fin.open("input");
+	int n, m, r;
+
+	//fin >> n >> m >> r;
+	cin >> n >> m >> r;
+	Graph *g = new Graph(n);
+	int u, v;
+	for (int i=0; i<m; i++) {
+		//fin >> u >> v;
+		cin >> u >> v;
+		g->add_edge(u-1, v-1);
+	}
+	//g->display();
+	int s;
+	int *d;
+	ofstream fout;
+	fout.open(argv[1]);
+
+	cout << "r = " << r << endl;
+	for(int i=0; i<r; i++) {
+		//fin >> s;
+		cin >> s;
+		s--;
+		d = new int[n];
+
+		cout << "BFS for source: " << s << endl;
+		g->bfs(s, d);
+
+		fout << g->get_diameter(d) << " " << g->computeChecksum(d) << endl;
+		//cout << g->get_diameter(d) << " " << g->checksum(d) << endl;
+
+		cout << "----------------------------" << endl;
+
+		delete d;
+	}
+
+	delete g;
+	/*
+	//fin.close();
+	 */
+
+	return 0;
+}
