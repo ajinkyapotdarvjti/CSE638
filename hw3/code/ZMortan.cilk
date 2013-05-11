@@ -1,0 +1,177 @@
+#include <iostream>
+#include <fstream>
+#include <sys/time.h>
+#include <cstdlib>
+#include <cmath>
+#define MAX_SIZE 8192
+
+using namespace std;
+
+int n = 1;
+int m = 1;
+
+void iter_MM(int *x_z, int *y_z, int *z_z, int basex, int basey, int basez, int size) {
+
+	for(int i=0; i<size; i++) {
+		for(int k=0; k<size; k++) {
+			for(int j=0; j<size; j++) {
+				int linear_index_z = basez + size*i + j;
+				int linear_index_x = basex + size*i + k;
+				int linear_index_y = basey + size*k + j;
+				z_z[linear_index_z] += x_z[linear_index_x] * y_z[linear_index_y];
+			}
+		}
+	}
+}
+
+void rec_MM2(int *x_z, int *y_z, int *z_z, int basex, int basey, int basez, int size) {
+
+	if(size <= m) {
+		iter_MM(x_z, y_z, z_z, basex, basey, basez, size);
+	} else {
+
+		rec_MM2(x_z, y_z, z_z, basex+0, basey+0, basez+0, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+(size*size)/4, basey+2*(size*size)/4, basez+0, size/2);
+
+		rec_MM2(x_z, y_z, z_z, basex+0, basey+(size*size)/4, basez+(size*size)/4, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+(size*size)/4, basey+3*(size*size)/4, basez+(size*size)/4, size/2);
+
+		rec_MM2(x_z, y_z, z_z, basex+2*(size*size)/4, basey+0, basez+2*(size*size)/4, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+3*(size*size)/4, basey+2*(size*size)/4, basez+2*(size*size)/4, size/2);
+
+		rec_MM2(x_z, y_z, z_z, basex+2*(size*size)/4, basey+(size*size)/4, basez+3*(size*size)/4, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+3*(size*size)/4, basey+3*(size*size)/4, basez+3*(size*size)/4, size/2);
+
+	}
+}
+
+void display(int *M, int startr, int startc, int size) {
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			cout << M[n*(startr + i) + (startc + j)] << " ";
+		}
+		cout << endl;
+	}
+
+	cout << "---------------" << endl;
+}
+
+void r2z(int *x, int *x_z, int startr, int startc, int *k, int size) {
+
+	//cout << "size = " << size << endl;
+	if(size <= m) {
+		for(int i=0; i<size; i++) {
+			for(int j=0; j<size; j++) {
+				x_z[(*k)] = x[n*(startr + i) + (startc + j)];
+				(*k)++;
+			}
+		}
+	} else {
+		r2z(x, x_z, startr, startc, k, size/2);
+		r2z(x, x_z, startr, startc+size/2, k, size/2);
+		r2z(x, x_z, startr+size/2, startc, k, size/2);
+		r2z(x, x_z, startr+size/2, startc+size/2, k, size/2);
+	}
+}
+
+void z2r(int *x_z, int *x, int startz, int startr, int startc, int size) {
+
+	if(size <= m) {
+
+		int linear_index = 0;
+		for(int i=0; i<m; i++) {
+			for(int j=0; j<m; j++) {
+				linear_index = startz + i*m + j;
+				x[n*(startr+i) + (startc+j)] = x_z[linear_index];
+			}
+
+		}
+
+	} else {
+
+		z2r(x_z, x, startz+0, startr+0, startc+0, size/2);
+		z2r(x_z, x, startz+((size*size)/4), startr, startc+size/2, size/2);
+		z2r(x_z, x, startz+ 2*((size*size)/4), startr+size/2, startc+0, size/2);
+		z2r(x_z, x, startz+3*((size*size)/4), startr+size/2, startc+size/2, size/2);
+	}
+
+}
+
+int cilk_main(int argc, char* argv[]) {
+
+	n = atoi(argv[1]);
+	m = atoi(argv[2]);
+
+	int size = n;
+
+	int *X = new int[size*size];
+	int *Y = new int[size*size];
+	int *Z = new int[size*size];
+	int *X_Z = new int[size*size];
+	int *Y_Z = new int[size*size];
+	int *Z_Z = new int[size*size];
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			X[size*i +j] = size*i + j;
+		}
+	}
+
+	// initializing Y in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Y[size*i +j] = i + j;
+		}
+	}
+
+	// initializing Z in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Z[size*i + j] = 0;
+		}
+	}
+
+	// initializing Z_Z in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Z_Z[size*i + j] = 0;
+		}
+	}
+
+	int k = 0;
+	struct timeval start, end;
+	long mtime, seconds, useconds;
+
+	gettimeofday(&start, NULL);
+
+	// -------------------- measurement begins -------------------------------
+
+	r2z(X, X_Z, 0, 0, &k, size);
+
+	k = 0;
+	r2z(Y, Y_Z, 0, 0, &k, size);
+
+	//k = 0;
+	//r2z(Z, Z_Z, 0, 0, &k, size);
+
+	rec_MM2(X_Z, Y_Z, Z_Z, 0, 0, 0, size);
+	z2r(Z_Z, Z, 0, 0, 0, size);
+
+	// -------------------- measurement ends -------------------------------
+
+	gettimeofday(&end, NULL);
+
+	seconds  = end.tv_sec  - start.tv_sec;
+	useconds = end.tv_usec - start.tv_usec;
+	mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+        cout << "Rec MM 2 done in " << mtime << " ms for m = " << m << ", n = " << n << endl;
+	//display(X, 0, 0, size);
+	//display(Y, 0, 0, size);
+	//display(Z, 0, 0, size);
+
+	return 0;
+}
+

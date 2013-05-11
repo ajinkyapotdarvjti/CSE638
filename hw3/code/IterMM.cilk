@@ -1,0 +1,213 @@
+#include <iostream>
+#include <fstream>
+#include <sys/time.h>
+
+#include <cilk.h>
+#include <pthread_mutex.h>
+#include <sys/time.h>
+
+using namespace std;
+
+int n = 1;
+
+void iter_MM_IJK(int *x, int *y, int *z, int n) {
+
+	for(int i=0; i<n; i++) {
+		for(int j=0; j<n; j++) {
+			for(int k=0; k<n; k++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_IKJ(int *x, int *y, int *z, int n) {
+
+	for(int i=0; i<n; i++) {
+		for(int k=0; k<n; k++) {
+			for(int j=0; j<n; j++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_JIK(int *x, int *y, int *z, int n) {
+	for(int j=0; j<n; j++) {
+		for(int i=0; i<n; i++) {
+			for(int k=0; k<n; k++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_JKI(int *x, int *y, int *z, int n) {
+	for(int j=0; j<n; j++) {
+		for(int k=0; k<n; k++) {
+			for(int i=0; i<n; i++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_KIJ(int *x, int *y, int *z, int n) {
+	for(int k=0; k<n; k++) {
+		for(int i=0; i<n; i++) {
+			for(int j=0; j<n; j++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_KJI(int *x, int *y, int *z, int n) {
+	for(int k=0; k<n; k++) {
+		for(int j=0; j<n; j++)
+			for(int i=0; i<n; i++) { {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+			}
+	}
+}
+
+void display(int *M, int n) {		
+
+	// initializing x in row major order
+	for(int i=0; i<n; i++) {
+		for(int j=0; j<n; j++) {
+			cout << M[n*i +j] << " ";
+		}
+		cout << endl;
+	}
+
+	cout << "---------------" << endl;
+}
+
+int cilk_main(int argc, char* argv[]) {
+
+	n = atoi(argv[1]);
+	int ival = atoi(argv[2]);
+
+	int size = n;
+
+	int *X = new int[size*size];
+	int *Y = new int[size*size];
+	int *Z = new int[size*size];
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			X[size*i +j] = size*i + j;
+		}
+	}
+
+	// initializing Y in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Y[size*i +j] = i + j;
+		}
+	}
+
+	// initializing Z in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Z[size*i + j] = 0;
+		}
+	}
+
+	struct timeval start, end;
+	long mtime, seconds, useconds;
+
+	switch(ival) {
+
+		case 1:
+			gettimeofday(&start, NULL);
+
+			// -------------------- measurement begins -------------------------------
+			iter_MM_IJK(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			gettimeofday(&end, NULL);
+
+			seconds  = end.tv_sec  - start.tv_sec;        
+			useconds = end.tv_usec - start.tv_usec;
+			mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+			cout << "Iter_MM_IJK done in " << mtime << " ms, n = " << n << ", version = " << ival << endl;
+			break;
+
+		case 2:
+			gettimeofday(&start, NULL);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_IKJ(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			gettimeofday(&end, NULL);
+
+			seconds  = end.tv_sec  - start.tv_sec;
+			useconds = end.tv_usec - start.tv_usec;
+			mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+			cout << "Iter_MM_IKJ done in " << mtime << " ms, n = " << n << ", version = " << ival << endl;
+			break;
+
+		case 3:
+			gettimeofday(&start, NULL);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_JIK(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			gettimeofday(&end, NULL);
+
+			seconds  = end.tv_sec  - start.tv_sec;
+			useconds = end.tv_usec - start.tv_usec;
+			mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+			cout << "Iter_MM_JIK done in " << mtime << " ms, n = " << n << ", version = " << ival << endl;
+			break;
+
+		case 4:
+			gettimeofday(&start, NULL);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_JKI(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			gettimeofday(&end, NULL);
+
+			seconds  = end.tv_sec  - start.tv_sec;
+			useconds = end.tv_usec - start.tv_usec;
+			mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+			cout << "iter_MM_JKI done in " << mtime << " ms, n = " << n << ", version = " << ival << endl;
+			break;
+
+		case 5:
+			gettimeofday(&start, NULL);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_KIJ(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			gettimeofday(&end, NULL);
+
+			seconds  = end.tv_sec  - start.tv_sec;
+			useconds = end.tv_usec - start.tv_usec;
+			mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+			cout << "iter_MM_KIJ done in " << mtime << " ms, n = " << n << ", version = " << ival << endl;
+			break;
+
+		case 6:
+			gettimeofday(&start, NULL);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_KJI(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			gettimeofday(&end, NULL);
+
+			seconds  = end.tv_sec  - start.tv_sec;
+			useconds = end.tv_usec - start.tv_usec;
+			mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+			cout << "iter_MM_KJI done in " << mtime << " ms, n = " << n << ", version = " << ival << endl;
+			break;
+	}
+	//	display(z);
+	return 0;
+}
+

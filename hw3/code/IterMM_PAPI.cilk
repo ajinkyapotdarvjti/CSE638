@@ -1,0 +1,246 @@
+#include <iostream>
+#include <fstream>
+#include <sys/time.h>
+
+#include <cilk.h>
+#include <pthread_mutex.h>
+#include <sys/time.h>
+
+#include "papi.h"
+
+#define NUM_EVENTS 1
+#define ERROR_RETURN(retval) { fprintf(stderr, "Error %d %s:line %d: \n", retval,__FILE__,__LINE__);  exit(retval); }
+
+using namespace std;
+
+int n = 1;
+
+void iter_MM_IJK(int *x, int *y, int *z, int n) {
+
+	for(int i=0; i<n; i++) {
+		for(int j=0; j<n; j++) {
+			for(int k=0; k<n; k++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_IKJ(int *x, int *y, int *z, int n) {
+
+	for(int i=0; i<n; i++) {
+		for(int k=0; k<n; k++) {
+			for(int j=0; j<n; j++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_JIK(int *x, int *y, int *z, int n) {
+	for(int j=0; j<n; j++) {
+		for(int i=0; i<n; i++) {
+			for(int k=0; k<n; k++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_JKI(int *x, int *y, int *z, int n) {
+	for(int j=0; j<n; j++) {
+		for(int k=0; k<n; k++) {
+			for(int i=0; i<n; i++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_KIJ(int *x, int *y, int *z, int n) {
+	for(int k=0; k<n; k++) {
+		for(int i=0; i<n; i++) {
+			for(int j=0; j<n; j++) {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+		}
+	}
+}
+
+void iter_MM_KJI(int *x, int *y, int *z, int n) {
+	for(int k=0; k<n; k++) {
+		for(int j=0; j<n; j++)
+			for(int i=0; i<n; i++) { {
+				z[n*i + j] += x[n*i + k] * y[n*k + j];
+			}
+			}
+	}
+}
+
+void display(int *M, int n) {		
+
+	// initializing x in row major order
+	for(int i=0; i<n; i++) {
+		for(int j=0; j<n; j++) {
+			cout << M[n*i +j] << " ";
+		}
+		cout << endl;
+	}
+
+	cout << "---------------" << endl;
+}
+
+int cilk_main(int argc, char* argv[]) {
+
+	n = atoi(argv[1]);
+	int ival = atoi(argv[2]);
+        int parameter =  atoi(argv[3]);
+
+	int size = n;
+
+	int *X = new int[size*size];
+	int *Y = new int[size*size];
+	int *Z = new int[size*size];
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			X[size*i +j] = size*i + j;
+		}
+	}
+
+	// initializing Y in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Y[size*i +j] = i + j;
+		}
+	}
+
+	// initializing Z in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Z[size*i + j] = 0;
+		}
+	}
+
+	int retval;
+	int EventSet = PAPI_NULL;
+	int eventCode = 0;
+	char errstring[PAPI_MAX_STR_LEN];
+	long long values[NUM_EVENTS];
+	string parameter_name[4] = {"L1 Cache misses", "L2 Cache misses", "L3 Cache misses", "Number of Instructions"};
+
+	if((retval = PAPI_library_init(PAPI_VER_CURRENT)) != PAPI_VER_CURRENT )
+	{
+		fprintf(stderr, "Error: %s\n", errstring);
+		exit(1);
+	}
+
+	if ((retval=PAPI_create_eventset(&EventSet)) != PAPI_OK)
+		ERROR_RETURN(retval);
+
+	switch(parameter) {
+		case 1:
+			eventCode = PAPI_L1_DCM;
+			break;
+
+		case 2:
+			eventCode = PAPI_L2_DCM;
+			break;
+
+		case 3:
+			eventCode = PAPI_L3_DCM;
+			break;
+
+		case 4:
+			eventCode = PAPI_TOT_INS;
+			break;
+	};
+
+	if ((retval=PAPI_add_event(EventSet, eventCode)) != PAPI_OK)
+		ERROR_RETURN(retval);
+
+	switch(ival) {
+
+		case 1:
+
+			if ( (retval=PAPI_start(EventSet)) != PAPI_OK) ERROR_RETURN(retval);
+
+			// -------------------- measurement begins -------------------------------
+			iter_MM_IJK(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			if ( (retval=PAPI_stop(EventSet,values)) != PAPI_OK) ERROR_RETURN(retval);
+
+			break;
+
+		case 2:
+			if ( (retval=PAPI_start(EventSet)) != PAPI_OK) ERROR_RETURN(retval);
+
+			// -------------------- measurement begins -------------------------------
+			iter_MM_IKJ(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			if ( (retval=PAPI_stop(EventSet,values)) != PAPI_OK) ERROR_RETURN(retval);
+
+			break;
+
+		case 3:
+			if ( (retval=PAPI_start(EventSet)) != PAPI_OK) ERROR_RETURN(retval);
+
+			// -------------------- measurement begins -------------------------------
+			iter_MM_JIK(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			if ( (retval=PAPI_stop(EventSet,values)) != PAPI_OK) ERROR_RETURN(retval);
+
+			break;
+
+		case 4:
+			if ( (retval=PAPI_start(EventSet)) != PAPI_OK) ERROR_RETURN(retval);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_JKI(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			if ( (retval=PAPI_stop(EventSet,values)) != PAPI_OK) ERROR_RETURN(retval);
+
+			break;
+
+		case 5:
+			if ( (retval=PAPI_start(EventSet)) != PAPI_OK) ERROR_RETURN(retval);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_KIJ(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			if ( (retval=PAPI_stop(EventSet,values)) != PAPI_OK) ERROR_RETURN(retval);
+
+			break;
+
+		case 6:
+			if ( (retval=PAPI_start(EventSet)) != PAPI_OK) ERROR_RETURN(retval);
+			// -------------------- measurement begins -------------------------------
+			iter_MM_KJI(X, Y, Z, size);
+			// -------------------- measurement ends -------------------------------
+
+			if ( (retval=PAPI_stop(EventSet,values)) != PAPI_OK) ERROR_RETURN(retval);
+
+			break;
+	}
+
+	cout << "Iter_MM, " << parameter_name[parameter-1] << " =  " << values[0] << ", n = " << n << ", version = " << ival << endl;
+
+	if ( (retval=PAPI_remove_event(EventSet, eventCode))!=PAPI_OK)
+		ERROR_RETURN(retval);
+
+	/* Free all memory and data structures, EventSet must be empty. */
+
+	if ( (retval=PAPI_destroy_eventset(&EventSet)) != PAPI_OK)
+		ERROR_RETURN(retval);
+
+	/* free the resources used by PAPI */
+
+	PAPI_shutdown();
+
+	//display(z);
+	return 0;
+}

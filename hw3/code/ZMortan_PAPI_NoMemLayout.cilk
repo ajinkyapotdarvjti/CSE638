@@ -1,0 +1,228 @@
+#include <iostream>
+#include <fstream>
+#include <sys/time.h>
+#include <cstdlib>
+#include <cmath>
+#include <string>
+#include "papi.h"
+
+#define NUM_EVENTS 1
+#define ERROR_RETURN(retval) { fprintf(stderr, "Error %d %s:line %d: \n", retval,__FILE__,__LINE__);  exit(retval); }
+
+
+#define MAX_SIZE 8192
+
+using namespace std;
+
+int n = 1;
+int m = 1;
+
+void iter_MM(int *x_z, int *y_z, int *z_z, int basex, int basey, int basez, int size) {
+
+	for(int i=0; i<size; i++) {
+		for(int k=0; k<size; k++) {
+			for(int j=0; j<size; j++) {
+				int linear_index_z = basez + size*i + j;
+				int linear_index_x = basex + size*i + k;
+				int linear_index_y = basey + size*k + j;
+				z_z[linear_index_z] += x_z[linear_index_x] * y_z[linear_index_y];
+			}
+		}
+	}
+}
+
+void rec_MM2(int *x_z, int *y_z, int *z_z, int basex, int basey, int basez, int size) {
+
+	if(size <= m) {
+		iter_MM(x_z, y_z, z_z, basex, basey, basez, size);
+	} else {
+
+		rec_MM2(x_z, y_z, z_z, basex+0, basey+0, basez+0, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+(size*size)/4, basey+2*(size*size)/4, basez+0, size/2);
+
+		rec_MM2(x_z, y_z, z_z, basex+0, basey+(size*size)/4, basez+(size*size)/4, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+(size*size)/4, basey+3*(size*size)/4, basez+(size*size)/4, size/2);
+
+		rec_MM2(x_z, y_z, z_z, basex+2*(size*size)/4, basey+0, basez+2*(size*size)/4, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+3*(size*size)/4, basey+2*(size*size)/4, basez+2*(size*size)/4, size/2);
+
+		rec_MM2(x_z, y_z, z_z, basex+2*(size*size)/4, basey+(size*size)/4, basez+3*(size*size)/4, size/2);
+		rec_MM2(x_z, y_z, z_z, basex+3*(size*size)/4, basey+3*(size*size)/4, basez+3*(size*size)/4, size/2);
+
+	}
+}
+
+void display(int *M, int startr, int startc, int size) {
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			cout << M[n*(startr + i) + (startc + j)] << " ";
+		}
+		cout << endl;
+	}
+
+	cout << "---------------" << endl;
+}
+
+void r2z(int *x, int *x_z, int startr, int startc, int *k, int size) {
+
+	//cout << "size = " << size << endl;
+	if(size <= m) {
+		for(int i=0; i<size; i++) {
+			for(int j=0; j<size; j++) {
+				x_z[(*k)] = x[n*(startr + i) + (startc + j)];
+				(*k)++;
+			}
+		}
+	} else {
+		r2z(x, x_z, startr, startc, k, size/2);
+		r2z(x, x_z, startr, startc+size/2, k, size/2);
+		r2z(x, x_z, startr+size/2, startc, k, size/2);
+		r2z(x, x_z, startr+size/2, startc+size/2, k, size/2);
+	}
+}
+
+void z2r(int *x_z, int *x, int startz, int startr, int startc, int size) {
+
+	if(size <= m) {
+
+		int linear_index = 0;
+		for(int i=0; i<m; i++) {
+			for(int j=0; j<m; j++) {
+				linear_index = startz + i*m + j;
+				x[n*(startr+i) + (startc+j)] = x_z[linear_index];
+			}
+
+		}
+
+	} else {
+
+		z2r(x_z, x, startz+0, startr+0, startc+0, size/2);
+		z2r(x_z, x, startz+((size*size)/4), startr, startc+size/2, size/2);
+		z2r(x_z, x, startz+ 2*((size*size)/4), startr+size/2, startc+0, size/2);
+		z2r(x_z, x, startz+3*((size*size)/4), startr+size/2, startc+size/2, size/2);
+	}
+
+}
+
+int cilk_main(int argc, char* argv[]) {
+
+	n = atoi(argv[1]);
+	m = atoi(argv[2]);
+
+	int parameter = atoi(argv[3]);
+	int size = n;
+
+	int *X = new int[size*size];
+	int *Y = new int[size*size];
+	int *Z = new int[size*size];
+	int *X_Z = new int[size*size];
+	int *Y_Z = new int[size*size];
+	int *Z_Z = new int[size*size];
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			X[size*i +j] = size*i + j;
+		}
+	}
+
+	// initializing Y in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Y[size*i +j] = i + j;
+		}
+	}
+
+	// initializing Z in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Z[size*i + j] = 0;
+		}
+	}
+
+	// initializing Z_Z in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Z_Z[size*i + j] = 0;
+		}
+	}
+
+	int k = 0;
+
+        int retval;
+        int EventSet = PAPI_NULL;
+        int eventCode = 0;
+        char errstring[PAPI_MAX_STR_LEN];
+        long long values[NUM_EVENTS];
+        string parameter_name[4] = {"L1 Cache misses", "L2 Cache misses", "L3 Cache misses", "Number of Instructions"};
+        if((retval = PAPI_library_init(PAPI_VER_CURRENT)) != PAPI_VER_CURRENT ) {
+                fprintf(stderr, "Error: %s\n", errstring);
+                exit(1);
+        }
+
+        if ((retval=PAPI_create_eventset(&EventSet)) != PAPI_OK)
+                ERROR_RETURN(retval);
+
+        switch(parameter) {
+                case 1:
+                        eventCode = PAPI_L1_DCM;
+                        break;
+
+                case 2:
+                        eventCode = PAPI_L2_DCM;
+                        break;
+
+                case 3:
+                        eventCode = PAPI_L3_DCM;
+                        break;
+
+                case 4:
+                        eventCode = PAPI_TOT_INS;
+                        break;
+        };
+
+        if ((retval=PAPI_add_event(EventSet, eventCode)) != PAPI_OK)
+                ERROR_RETURN(retval);
+
+	k = 0;
+        r2z(X, X_Z, 0, 0, &k, size);
+
+        k = 0;
+        r2z(Y, Y_Z, 0, 0, &k, size);
+
+        //k = 0;
+        //r2z(Z, Z_Z, 0, 0, &k, size);
+
+        if ( (retval=PAPI_start(EventSet)) != PAPI_OK)
+                ERROR_RETURN(retval);
+
+	// -------------------- measurement begins -------------------------------
+
+	rec_MM2(X_Z, Y_Z, Z_Z, 0, 0, 0, size);
+
+	// -------------------- measurement ends -------------------------------
+
+        /* Stop counting, this reads from the counter as well as stop it. */
+        if ( (retval=PAPI_stop(EventSet,values)) != PAPI_OK)
+                ERROR_RETURN(retval);
+
+	z2r(Z_Z, Z, 0, 0, 0, size);
+        cout << "Rec MM 2, " << parameter_name[parameter-1] << " = " << values[0] << " for m = " << m << ", n = " << n << endl;
+
+        if ( (retval=PAPI_remove_event(EventSet, eventCode))!=PAPI_OK)
+                ERROR_RETURN(retval);
+
+        /* Free all memory and data structures, EventSet must be empty. */
+
+        if ( (retval=PAPI_destroy_eventset(&EventSet)) != PAPI_OK)
+                ERROR_RETURN(retval);
+
+        /* free the resources used by PAPI */
+
+        PAPI_shutdown();
+
+        //display(Z, 0, 0, size);
+        return 0;
+}

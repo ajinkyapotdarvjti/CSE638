@@ -1,0 +1,16 @@
+Rec MM done in 1453055 ms for m = 64, n = 8192
+Rec MM done in 1506826 ms for m = 32, n = 8192
+Rec MM done in 1512409 ms for m = 128, n = 8192
+Rec MM done in 1460267 ms for m = 256, n = 8192
+Rec MM done in 1440485 ms for m = 1024, n = 8192
+Rec MM done in 1474904 ms for m = 2048, n = 8192
+Rec MM done in 1562865 ms for m = 8, n = 8192
+Rec MM done in 1694439 ms for m = 16, n = 8192
+Rec MM done in 1476109 ms for m = 4096, n = 8192
+Rec MM done in 1701823 ms for m = 4, n = 8192
+Rec MM done in 1447244 ms for m = 512, n = 8192
+Rec MM done in 3424 ms for m = 1024, n = 1024
+Rec MM done in 23114 ms for m = 1024, n = 2048
+Rec MM done in 181464 ms for m = 1024, n = 4096
+Rec MM done in 752 ms for m = 1024, n = 512
+Rec MM done in 96 ms for m = 1024, n = 256

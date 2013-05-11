@@ -1,0 +1,5 @@
+Rec MM 2, L1 Cache misses = 79991 for m = 64, n = 256
+Rec MM 2, L1 Cache misses = 543335 for m = 64, n = 512
+Rec MM 2, L1 Cache misses = 3923487 for m = 64, n = 1024
+Rec MM 2, L1 Cache misses = 30527256 for m = 64, n = 2048
+Rec MM 2, L1 Cache misses = 236903439 for m = 64, n = 4096

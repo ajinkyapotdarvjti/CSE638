@@ -1,0 +1,112 @@
+#include <iostream>
+#include <fstream>
+#include <sys/time.h>
+#include <cstdlib>
+
+using namespace std;
+
+int n = 1;
+int m = 1;
+
+void iter_MM(int *x, int *y, int *z, int startxr, int startxc, int startyr, int startyc, int startzr, int startzc, int size) {
+	for(int i=0; i<size; i++) {
+		for(int k=0; k<size; k++) {
+			for(int j=0; j<size; j++) {
+				z[n*(startzr + i) + (startzc + j)] += x[n*(startxr + i) + (startxc + k)] * y[n*(startyr + k) + (startyc + j)];
+			}
+		}
+	}
+}
+
+void rec_MM(int *x, int *y, int *z, int startxr, int startxc, int startyr, int startyc, int startzr, int startzc, int size) {
+	//cout << "size = " << size << endl;
+
+	if(size <= m) {
+		iter_MM(x, y, z, startxr, startxc, startyr, startyc, startzr, startzc, size);
+	} else {
+
+		rec_MM(x, y, z, startxr, startxc, startyr, startyc, startzr, startzc, size/2);
+		rec_MM(x, y, z, startxr, startxc+size/2, startyr+size/2, startyc, startzr, startzc, size/2);
+
+		rec_MM(x, y, z, startxr, startxc, startyr, startyc+size/2, startzr, startzc+size/2, size/2);
+		rec_MM(x, y, z, startxr, startxc+size/2, startyr+size/2, startyc+size/2, startzr, startzc+size/2, size/2);
+
+		rec_MM(x, y, z, startxr+size/2, startxc, startyr, startyc, startzr+size/2, startzc, size/2);
+		rec_MM(x, y, z, startxr+size/2, startxc+size/2, startyr+size/2, startyc, startzr+size/2, startzc, size/2);
+
+		rec_MM(x, y, z, startxr+size/2, startxc, startyr, startyc+size/2, startzr+size/2, startzc+size/2, size/2);
+		rec_MM(x, y, z, startxr+size/2, startxc+size/2, startyr+size/2, startyc+size/2, startzr+size/2, startzc+size/2, size/2);
+
+	}
+}
+
+void display(int *M, int startr, int startc, int size) {
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			cout << M[n*(startr + i) + (startc + j)] << " ";
+		}
+		cout << endl;
+	}
+
+	cout << "---------------" << endl;
+}
+
+int cilk_main(int argc, char* argv[]) {
+
+	n = atoi(argv[1]);
+	m = atoi(argv[2]);
+
+	int size = n;
+
+	int *X = new int[size*size];
+	int *Y = new int[size*size];
+	int *Z = new int[size*size];
+
+	// initializing X in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			X[size*i +j] = size*i + j;
+		}
+	}
+
+	// initializing Y in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Y[size*i +j] = i + j;
+		}
+	}
+
+	// initializing Z in row major order
+	for(int i=0; i<size; i++) {
+		for(int j=0; j<size; j++) {
+			Z[size*i + j] = 0;
+		}
+	}
+
+	struct timeval start, end;
+	long mtime, seconds, useconds;
+
+	gettimeofday(&start, NULL);
+	// -------------------- measurement begins -------------------------------
+
+	rec_MM(X, Y, Z, 0, 0, 0, 0, 0, 0, size);
+
+	// -------------------- measurement ends -------------------------------
+
+	gettimeofday(&end, NULL);
+
+	seconds  = end.tv_sec  - start.tv_sec;
+	useconds = end.tv_usec - start.tv_usec;
+	mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+	cout << "Rec MM done in " << mtime << " ms for m = " << m << ", n = " << n << endl;
+
+
+	//display(X, 0, 0, size);
+	//display(Y, 0, 0, size);
+	//display(Z, 0, 0, size);
+
+	return 0;
+}
+
