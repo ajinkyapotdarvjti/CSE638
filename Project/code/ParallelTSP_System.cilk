@@ -1,0 +1,466 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <queue>
+#include <cstdlib>
+#include <cmath>
+#include <sys/time.h>
+
+#include "header/graph.h"
+
+#include <cilk.h>
+#include <pthread_mutex.h>
+#include <reducer_opadd.h>
+
+#define BATCH_NUMBER 100
+#define BATCH_SIZE 100
+#define PH_EVAPORATION 0.1
+#define MAX_INT 1000000
+#define PH_SCALE_FACTOR 1000000
+
+#define MAX_EDGE_COST 20
+#define PH_DEFAULT 500
+
+#define A 1
+#define B 3 
+#define K 1
+#define q0 0.7
+
+using namespace std;
+
+long nn_cost = 0;
+
+struct coordinate {
+	double x;
+	double y;
+};
+
+Graph* get_graph(char *file_name) {
+
+	ifstream input_file;
+
+	input_file.open(file_name);
+	char x_str[100];
+	char y_str[100];
+	char coordinate_number[100];
+	std::vector<coordinate> vec;
+	if (input_file.is_open()) {
+		while (input_file >> coordinate_number) {
+			input_file >> x_str;
+			input_file >> y_str;
+			//cout<<"y_str:" <<y_str << '\n';          
+			struct coordinate c;
+			c.x = atof(x_str);
+			c.y = atof(y_str);
+			vec.push_back(c);
+			//cout<<"x_str:" <<x_str << ", y_str: " << y_str << ", size = " << vec.size() << endl;
+		}
+	}
+
+	input_file.close();
+
+	int n = vec.size();
+
+	Graph *g = new Graph(n);
+
+	for(int i=0; i<n; i++) {
+		for(int j=0; j<i; j++) {
+			coordinate c1 = vec.at(i);
+			coordinate c2 = vec.at(j);
+
+			//cout << "c1: " << c1.x << " " << c1.y << "\n";
+			//cout << "c2: " << c2.x << " " << c2.y << "\n";
+			double dist = sqrt((c2.x- c1.x)*(c2.x - c1.x) + (c2.y - c1.y) * (c2.y - c1.y));
+			//cout << "distance: " << dist;
+			g->add_edge(i, j, (long)dist, (long)PH_DEFAULT*PH_SCALE_FACTOR);
+			g->add_edge(j, i, (long)dist, (long)PH_DEFAULT*PH_SCALE_FACTOR);
+		}
+	}
+	return g;
+}
+
+void display_result(int c, int *d, int n) {
+	for(int i=0; i<n; i++) {
+		cout << d[i] << "->";
+	}
+	cout << d[0];
+	cout << "...cost = " << c << endl;
+}
+
+int get_max(long **p, long length) {
+
+	int max_index = 0;
+
+	for(int i=0; i<length; i++) {
+		if(p[i][1] > p[max_index][1]) {
+			max_index = i;
+		}
+	}
+
+	return max_index;
+}
+
+void ant_travel(Graph *g, int r, int *a) {
+
+	//cout << "called ant_travel with r = " << r << endl;
+	int k = 0;
+	int *visited = new int[g->n];
+	for(int i=0; i<g->n; i++) {
+		visited[i] = 0;
+	}
+
+	a[k++] = r;
+	visited[r] = 1;
+
+	cilk::mutex l;
+
+	while(k<g->n) {
+		int random_selection = 1;
+
+		//cout << "Reached....k = " << k << endl;
+		int outdegree = g->vertices[a[k-1]]->neighbors->size();
+
+		int p_length = 0;
+		cilk_for(int j=0; j<outdegree; j++) {
+			Neighbor* n1 = g->vertices[a[k-1]]->neighbors->at(j);
+			if(visited[n1->v->id] == 0) {
+				//cout << "n1->ph = " << n1->ph << endl;
+				l.lock();
+				p_length++;
+				l.unlock();
+			}
+		}
+
+		long **p = new long*[p_length];
+		cilk_for(int j=0; j<p_length; j++) {
+			p[j] = new long[2];
+		}
+
+		int p_point = 0;
+		cilk_for(int j=0; j<outdegree; j++) {
+			Neighbor* n1 = g->vertices[a[k-1]]->neighbors->at(j);
+			//cout << "iterating over unvisited neighbors....visited[n1->v->id]" << visited[n1->v->id] << endl;
+			if(visited[n1->v->id] == 0) {
+				double ph_factor = (double)pow((double)n1->ph, (double)A);
+				double edge_factor = (double)pow((double)1/(double)n1->cost, (double)B);
+				double b = ph_factor * edge_factor;
+				b = b * 10000;
+				if(b<1) b = 1;
+				//cout << "b = " << b << endl;
+
+				l.lock();
+				p[p_point][0] = n1->v->id;
+				p[p_point++][1] = (long)b;
+				l.unlock();
+
+				if(p[p_point-1][1] < 0) {
+					//cout << "p[p_point-1][1] = " << p[p_point-1][1] << ", b = " << b << ", n1->ph = " << n1->ph << ", edge factor = " << edge_factor << endl;
+				}
+
+			}
+		}
+
+		int reference = 100;
+		int c = rand() % reference;
+		c++;
+		//cout << "c = " << c << endl;
+		if(c <= (int)(reference * q0)) {
+			//cout << "doing system" << endl;
+			random_selection = 0;
+			int index = get_max(p, p_length);
+			a[k++] = p[index][0];
+			visited[a[k-1]] = 1;
+		} else {
+
+
+			double sum = 0;
+			cilk_for(int j=0; j<p_length; j++) {
+				l.lock();
+				sum = sum + p[j][1];
+				l.unlock();
+			}
+
+			int c = rand() % long(sum);
+			c++;
+			double s = 0;
+			if(sum < 0) {
+				//cout << "sum = " << sum << ", long(sum) = " << long(sum) << ", c = " << c << endl;
+			}
+
+			// sum may  exceed the data type limit, take care
+			for(int j=0; j<p_length; j++) {
+				s = s + p[j][1];
+
+				if(s >= c) {
+					a[k++] = p[j][0];
+					visited[a[k-1]] = 1;
+					break;
+				}
+			}
+		}
+
+		cilk_for(int j=0; j<p_length; j++) {
+			delete []p[j];
+		}
+		delete []p;
+	}
+
+	delete []visited;
+
+	/*
+	   cout << "This ant's path....";
+	   for(int i=0; i<g->n; i++) {
+	//cout << a[i] << "....";
+	}
+	cout << endl;
+	 */
+}
+
+long get_cost(Graph *g, int *d) {
+
+	long c = 0;
+
+	cilk::mutex l;
+
+	cilk_for(int j=0; j<g->n; j++) {
+		int outdegree = g->vertices[d[j]]->neighbors->size();
+		for(int k=0; k<outdegree; k++) {
+			Neighbor* n1 = g->vertices[d[j]]->neighbors->at(k);
+			if(n1->v->id == d[(j+1)%g->n]) {
+				l.lock();
+				c = c + n1->cost;
+				l.unlock();
+			}
+		}
+	}
+
+	long result= c;
+	return result;
+
+}
+
+void shift(int a[],int n) {
+	int s; 
+	s=a[n-1];
+	for(int i=n-1;i>0;i--) {
+		a[i]=a[i-1];
+	}
+	a[0]=s;
+}
+
+void brute_force(Graph *g, int a[],int m,int n, int *result, int *min_c) {
+
+	for(int i=0;i<m;i++) {
+
+		if(m>1) {
+			shift(a,m);
+			brute_force(g, a,m-1,n, result, min_c);
+		} else {
+
+			int c = get_cost(g, a);
+
+			if(c < *min_c) {
+				*min_c = c;
+
+				for(int j=0; j<n; j++) {
+					result[j] = a[j];
+				}
+			}
+
+		}
+	}
+}
+
+void local_pheromone_update(Graph *g, int *a) {
+
+	double delta = (double)((double)1/(double)(nn_cost*g->n));
+	delta *= PH_SCALE_FACTOR;
+	// update the temp ph for the edges of this path
+	for(int j=0; j<g->n; j++) {
+
+		int outdegree = g->vertices[a[j]]->neighbors->size();
+		for(int k=0; k<outdegree; k++) {
+			Neighbor *n1 = g->vertices[a[j]]->neighbors->at(k);
+			if(n1->v->id == a[(j+1)%g->n]) {
+				double d = (1-PH_EVAPORATION)*n1->ph;
+				d += (PH_EVAPORATION * delta);
+				//cout << "old ph = " << n1->ph << endl;
+				n1->ph = (long)d;
+				//if(n1->ph <= 0)cout << "updating ph, new ph = " << n1->ph << endl;
+			}
+		}
+	}
+}
+
+void global_pheromone_update(Graph *g, int *a, int cost) {
+
+	double delta = ((double)1/(double)cost);
+	delta *= PH_SCALE_FACTOR;
+
+	cilk_for(int j=0; j<g->n; j++) {
+		int outdegree = g->vertices[j]->neighbors->size();
+
+		cilk_for(int k=0; k<outdegree; k++) {
+
+			Neighbor *n1 = g->vertices[j]->neighbors->at(k);
+			double d = (1-PH_EVAPORATION)*n1->ph;
+
+			n1->ph = (long)d;
+			n1->temp_ph = 0;
+		}
+	}
+
+	for(int j=0; j<g->n; j++) {
+		int outdegree = g->vertices[a[j]]->neighbors->size();
+		for(int k=0; k<outdegree; k++) {
+			Neighbor *n1 = g->vertices[a[j]]->neighbors->at(k);
+			if(n1->v->id == a[(j+1)%g->n]) {
+				double d = (PH_EVAPORATION)*delta;
+				n1->ph += (long)d;
+				//cout << "updating ph, new ph = " << n1->ph << ", i = " << i << endl;
+			}
+		}
+	}
+
+}
+
+long aco_tsp(Graph *g, int *d) {
+
+	long min_c = MAX_INT;
+
+	cilk::mutex result;
+	cilk::mutex ph_accumulation;
+
+
+	for(int i=0; i<BATCH_NUMBER; i++) {
+
+		// send one batch of ants
+		cilk_for(int j=0; j<BATCH_SIZE; j++) {
+			//for(int j=0; j<BATCH_SIZE; j++) {
+			int *a = new int[g->n];
+			int r = rand() % g->n;
+			//cout << "ant no.." << j << ", batch no. " << i << endl;
+			ant_travel(g, r, a);
+
+			//cout << "ant is back" << endl;
+
+			//update the pheromone levels
+
+			// find the total cost of this path
+			long c = get_cost(g, a);
+
+			//cout << "Locking the result" << endl;
+			result.lock();
+			if(c < min_c) {
+				min_c = c;
+
+				for(int j=0; j<g->n; j++) {
+					d[j] = a[j];
+				}
+			}
+			//cout << "unlocking the result" << endl;
+			result.unlock();
+
+			local_pheromone_update(g, a);
+
+			delete []a;
+		}
+
+		// update ph for all the edges
+		//cout << "end of batch...." << i << ", cost so far " << min_c << endl;
+
+		global_pheromone_update(g, d, min_c);
+		}
+
+		return get_cost(g, d);
+	}
+
+	long brute_force_tsp(Graph *g, int *d) {
+
+		int *a = new int[g->n];
+		for(int i=0;i<g->n;i++)
+			a[i] = i;
+
+		int min_c = MAX_INT;
+		brute_force(g, a, g->n, g->n, d, &min_c);
+
+		delete []a;
+
+		return get_cost(g, d);
+	}
+
+	long nearest_neighbour_heuristic(Graph *g) {
+		int *visited = new int[g->n];
+		long i;
+		for(i=0; i<g->n; i++) {
+			visited[i] = 0;
+		}
+
+		long r = 0;
+		visited[r] = 1;
+		int total_cost = 0;
+		int *a = new int[g->n];
+
+		i = 0; 
+		while(i<g->n) {
+			long min_cost = INT_MAX;
+			int outdegree = g->vertices[r]->neighbors->size();
+
+			for(int k=0; k<outdegree; k++) {
+				Neighbor *n1 = g->vertices[r]->neighbors->at(k);
+
+				if(n1->cost < min_cost && !visited[n1->v->id]) {
+					min_cost = n1->cost;
+					r = n1->v->id;
+				}
+			}
+			a[i++]= r;
+			visited[r] = 1;
+		}
+
+		long final_cost = get_cost(g,a);
+
+		delete []a;
+		delete []visited;
+
+		return final_cost;
+
+	}
+
+
+	int cilk_main(int argc, char* argv[]) {
+
+		char file_name[20];
+		cin >> file_name;
+
+		Graph *g = get_graph(file_name);
+
+		nn_cost = nearest_neighbour_heuristic(g);
+
+		//g->display();
+
+		int *a = new int[g->n];
+		long c = 0;
+
+		struct timeval start, end;
+		long mtime, seconds, useconds;
+		gettimeofday(&start, NULL);
+		// -------------------- measurement begins -------------------------------
+		c = aco_tsp(g, a);
+		// -------------------- measurement ends -------------------------------
+		gettimeofday(&end, NULL);
+		seconds  = end.tv_sec  - start.tv_sec;
+		useconds = end.tv_usec - start.tv_usec;
+		mtime = ((seconds) * 1000 + useconds/1000.0) + 0.5;
+
+		cout << "Parallel ACO System: Time = " << mtime << endl;
+		cout << "ACO: " << endl;
+		display_result(c, a, g->n);
+		//g.display();
+
+		delete a;
+		delete g;
+
+		return 0;
+	}
+

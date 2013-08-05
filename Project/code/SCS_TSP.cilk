@@ -1,0 +1,462 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <queue>
+#include <cstdlib>
+#include <cmath>
+#include "header/graph.h"
+
+#include <cilk.h>
+#include <pthread_mutex.h>
+#include <reducer_opadd.h>
+
+#define BATCH_NUMBER 1000
+#define BATCH_SIZE 100
+#define PH_EVAPORATION 0.1
+#define MAX_INT 1000000
+
+#define MAX_EDGE_COST 20
+#define PH_DEFAULT 500
+
+#define A 1
+#define B 1
+#define K 1
+
+using namespace std;
+
+char* get_string_result(Graph *g, int *a);
+
+int get_distance(char *s1, char*s2) {
+
+	int len1 = strlen(s1);
+	int len2 = strlen(s2);
+
+	int result = 0;
+
+	for(int i=1; i<=len1; i++) {
+		int j = 0;
+		for(j=0; j<i; j++) {
+			if(s1[len1-i+j] != s2[j]) {
+				break;
+			}
+		}
+
+		if(j == i) {
+			result = j;
+		}
+	}
+
+	return result;
+}
+
+int is_substring(char *s1, char *s2) {
+
+	int len1 = strlen(s1);
+	int len2 = strlen(s2);
+
+	if(len1 < len2) return false;
+
+	for(int i=0; i<len1; i++) {
+		int j = 0;
+		for(; j<len2; j++) {
+			if(s1[i+j] != s2[j]) {
+				break;
+			}
+
+		}
+
+		if(j == len2) {
+			return true;
+		}
+
+
+	}
+	return false;
+}
+
+Graph* get_graph(char *file_name) {
+
+	ifstream fin;
+
+	fin.open(file_name);
+
+	std::vector<char *> vec;
+	char *vertex = new char[100];
+
+	if (fin.is_open()) {
+		while (fin >> vertex) {
+			char *str = new char[strlen(vertex)];
+			strcpy(str, vertex);
+			vec.push_back(str);
+		}
+	}
+
+	fin.close();
+
+	int n = vec.size();
+
+	Graph *g = new Graph(n);
+
+	for(int i=0; i<n; i++) {
+		g->vertices[i]->set_label(vec.at(i));
+	}
+
+	for(int i=0; i<n; i++) {
+		for(int j=0; j<n; j++) {
+			char *s1 = vec.at(i);
+			char *s2 = vec.at(j);
+			long dist = 0;
+			if(is_substring(s1, s2)) {
+				dist = strlen(s2);
+			} else {
+				dist = get_distance(s1, s2);
+				//dist = MAX_INT - dist;
+				//dist++;
+			}
+
+			g->add_edge(i, j, dist, (long)PH_DEFAULT);
+		}
+	}
+
+	return g;
+}
+
+void display_result(int c, int *d, int n) {
+	for(int i=0; i<n; i++) {
+		cout << d[i] << "->";
+	}
+	cout << d[0];
+	cout << "...cost = " << c << endl;
+}
+
+void ant_travel(Graph *g, int r, int *a) {
+
+	//cout << "called ant_travel with r = " << r << endl;
+	int k = 0;
+	int *visited = new int[g->n];
+	for(int i=0; i<g->n; i++) {
+		visited[i] = 0;
+	}
+
+	a[k++] = r;
+	visited[r] = 1;
+
+	cilk::mutex l;
+
+	while(k<g->n) {
+		int random_selection = 1;
+
+		//cout << "Reached....k = " << k << endl;
+		int outdegree = g->vertices[a[k-1]]->neighbors->size();
+
+		int p_length = 0;
+		cilk_for(int j=0; j<outdegree; j++) {
+			Neighbor* n1 = g->vertices[a[k-1]]->neighbors->at(j);
+			if(visited[n1->v->id] == 0) {
+				//cout << "n1->ph = " << n1->ph << endl;
+				l.lock();
+				p_length++;
+				l.unlock();
+			}
+		}
+
+		long **p = new long*[p_length];
+		cilk_for(int j=0; j<p_length; j++) {
+			p[j] = new long[2];
+		}
+
+		int p_point = 0;
+		cilk_for(int j=0; j<outdegree; j++) {
+			Neighbor* n1 = g->vertices[a[k-1]]->neighbors->at(j);
+			//cout << "iterating over unvisited neighbors....visited[n1->v->id]" << visited[n1->v->id] << endl;
+			if(visited[n1->v->id] == 0) {
+				double ph_factor = (double)pow((double)n1->ph, (double)A);
+				//double edge_factor = (double)pow((double)1/(double)n1->cost, (double)B);
+				double edge_factor = (double)pow((double)n1->cost, (double)B);
+				double b = ph_factor * edge_factor;
+				b = b * 10000;
+				if(b<1) b = 1;
+				//cout << "b = " << b << endl;
+
+				l.lock();
+				p[p_point][0] = n1->v->id;
+				p[p_point++][1] = (long)b;
+				l.unlock();
+
+				if(p[p_point-1][1] < 0) {
+					//cout << "p[p_point-1][1] = " << p[p_point-1][1] << ", b = " << b << ", n1->ph = " << n1->ph << ", edge factor = " << edge_factor << endl;
+				}
+
+			}
+		}
+
+		double sum = 0;
+		cilk_for(int j=0; j<p_length; j++) {
+			l.lock();
+			sum = sum + p[j][1];
+			l.unlock();
+		}
+
+		int c = rand() % long(sum);
+		c++;
+		double s = 0;
+		if(sum < 0) {
+			//cout << "sum = " << sum << ", long(sum) = " << long(sum) << ", c = " << c << endl;
+		}
+
+		// sum may  exceed the data type limit, take care
+		for(int j=0; j<p_length; j++) {
+			s = s + p[j][1];
+
+			if(s >= c) {
+				a[k++] = p[j][0];
+				visited[a[k-1]] = 1;
+				break;
+			}
+		}
+
+		cilk_for(int j=0; j<p_length; j++) {
+			delete []p[j];
+		}
+		delete []p;
+
+	}
+
+	delete []visited;
+
+	/*
+	   cout << "This ant's path....";
+	   for(int i=0; i<g->n; i++) {
+	//cout << a[i] << "....";
+	}
+	cout << endl;
+	 */
+}
+
+long get_cost(Graph *g, int *d) {
+
+
+	/*
+	long c = 0;
+
+	cilk::mutex l;
+
+	for(int j=0; j<g->n; j++) {
+		int outdegree = g->vertices[d[j]]->neighbors->size();
+		for(int k=0; k<outdegree; k++) {
+			Neighbor* n1 = g->vertices[d[j]]->neighbors->at(k);
+			if(n1->v->id == d[(j+1)%g->n]) {
+				l.lock();
+				cout << g->vertices[d[j]]->label << "-->" <<  g->vertices[d[(j+1)%g->n]]->label << ", c = " << n1->cost << endl;
+				c = c + n1->cost;
+				l.unlock();
+			}
+		}
+	}
+	cout << endl;
+	long result = c;
+	return result;
+	*/
+
+	char *cost = get_string_result(g, d);	
+	return strlen(cost);
+
+}
+
+void shift(int a[],int n) {
+	int s; 
+	s=a[n-1];
+	for(int i=n-1;i>0;i--) {
+		a[i]=a[i-1];
+	}
+	a[0]=s;
+}
+
+void brute_force(Graph *g, int a[],int m,int n, int *result, int *min_c) {
+
+	for(int i=0;i<m;i++) {
+
+		if(m>1) {
+			shift(a,m);
+			brute_force(g, a,m-1,n, result, min_c);
+		} else {
+
+			int c = get_cost(g, a);
+
+			if(c < *min_c) {
+				*min_c = c;
+
+				for(int j=0; j<n; j++) {
+					result[j] = a[j];
+				}
+			}
+
+		}
+	}
+}
+
+void update_ph_accumulation(Graph *g, int *a, double c) {
+
+	c = pow(c, (double)K);
+
+	// update the temp ph for the edges of this path
+	for(int j=0; j<g->n; j++) {
+
+		int outdegree = g->vertices[a[j]]->neighbors->size();
+		for(int k=0; k<outdegree; k++) {
+			Neighbor *n1 = g->vertices[a[j]]->neighbors->at(k);
+			if(n1->v->id == a[(j+1)%g->n]) {
+				double old_temp_ph =  n1->temp_ph;
+				n1->temp_ph = n1->temp_ph + ((double)1/c);
+				if(n1->temp_ph > 1) {
+					//cout << "updating temp ph " << n1->temp_ph << ", old temp ph...." << old_temp_ph << ", c = " << c << endl;
+				}
+			}
+		}
+	}
+}
+
+long aco_tsp(Graph *g, int *d) {
+
+	long min_c = -1;
+
+	cilk::mutex result;
+	cilk::mutex ph_accumulation;
+
+	for(int i=0; i<BATCH_NUMBER; i++) {
+
+		// send one batch of ants
+		cilk_for(int j=0; j<BATCH_SIZE; j++) {
+			//for(int j=0; j<BATCH_SIZE; j++) {
+			int *a = new int[g->n];
+			int r = rand() % g->n;
+			//cout << "r = " << r << endl;
+			//cout << "ant no.." << j << ", batch no. " << i << endl;
+			ant_travel(g, r, a);
+			//cout << "ant is back" << endl;
+
+			//update the pheromone levels
+
+			// find the total cost of this path
+			long c = get_cost(g, a);
+
+			//cout << "Locking the result" << endl;
+			result.lock();
+			if(c < min_c || min_c < 0) {
+				cout << "updating final answer" << endl;
+				min_c = c;
+
+				for(int j=0; j<g->n; j++) {
+					d[j] = a[j];
+				}
+			}
+			//cout << "unlocking the result" << endl;
+			result.unlock();
+
+			ph_accumulation.lock();
+			update_ph_accumulation(g, a, (double)c);
+			ph_accumulation.unlock();
+
+			delete []a;
+		}
+
+		// update ph for all the edges
+		cout << "end of batch...." << i << ", lenght of scs so far " << strlen(get_string_result(g, d)) << endl;
+
+		cilk_for(int j=0; j<g->n; j++) {
+			int outdegree = g->vertices[j]->neighbors->size();
+			cilk_for(int k=0; k<outdegree; k++) {
+				Neighbor *n1 = g->vertices[j]->neighbors->at(k);
+				long old_ph = n1->ph;
+				double d = (1-PH_EVAPORATION)*n1->ph + n1->temp_ph*1000000;
+				n1->ph = (long)d;
+				//cout << "old ph = " << old_ph << ", n1->temp_h = " << n1->temp_ph << ", new ph = " << n1->ph << endl;
+				n1->temp_ph = 0;
+			}
+		}
+		}
+
+		return get_cost(g, d);
+	}
+
+	long brute_force_tsp(Graph *g, int *d) {
+
+
+		int *a = new int[g->n];
+		for(int i=0;i<g->n;i++)
+			a[i] = i;
+
+		int min_c = MAX_INT;
+		brute_force(g, a, g->n, g->n, d, &min_c);
+
+		delete []a;
+
+		return get_cost(g, d);
+	}
+
+char* get_string_result(Graph *g, int *a) {
+
+	int n = g->n;
+
+	char *result = new char[n*10];
+	result[0] = 0;
+
+	for(int i=0; i<n; i++) {
+		if(i == 0) {
+			strcpy(result, g->vertices[a[i]]->label);
+		} else {
+
+			if(is_substring(result, g->vertices[a[i]]->label)) {
+				// no change
+			} else {
+				int d = get_distance(result, g->vertices[a[i]]->label);
+				strcat(result, g->vertices[a[i]]->label+d);
+			}
+		}
+	}
+
+	return result;
+}
+
+	int cilk_main(int argc, char* argv[]) {
+
+		char file_name[20];
+		cin >> file_name;
+
+		//cout << "d = " << get_distance("sidd123si", "siddhesh") << endl;
+		Graph *g = get_graph(file_name);
+
+		//g->display();
+
+		int *a = new int[g->n];
+		long c = 0;
+		c = aco_tsp(g, a);
+		cout << "ACO: " << endl;
+
+		/*
+		a[0] = 10;
+		a[1] = 6;
+		a[2] = 2;
+		a[3] = 3;
+		a[4] = 5;
+		a[5] = 9;
+		a[6] = 7;
+		a[7] = 4;
+		a[8] = 8;
+		a[9] = 1;
+		a[10] = 0;
+
+		c = get_cost(g, a);
+		display_result(c, a, g->n);
+		*/
+
+		char *result = get_string_result(g, a);
+		cout << "result = " << result << ", its length = " << strlen(result) << endl;
+		//g.display();
+
+		delete a;
+
+		delete g;
+
+		return 0;
+	}
